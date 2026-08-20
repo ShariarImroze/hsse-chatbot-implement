@@ -1,0 +1,7 @@
+Crime ID,Month,Reported by,Falls within,Longitude,Latitude,Location,LSOA code,LSOA name,Crime type,Last outcome category,Context
+crime-a,2025-01,Example Constabulary,Example Constabulary,-1.234500,52.123400,On or near High Street,E01000001,Example 001A,Burglary,Investigation complete; no suspect identified,
+crime-b,2025-01,Example Constabulary,Example Constabulary,-1.230000,52.120000,On or near Station Road,E01000002,Example 001B,Violence and sexual offences,Under investigation,
+crime-a,2025-01,Example Constabulary,Example Constabulary,-1.234500,52.123400,On or near High Street,E01000001,Example 001A,Burglary,Investigation complete; no suspect identified,
+,2025-01,Example Constabulary,Example Constabulary,-1.220000,52.110000,On or near Market Square,E01000003,Example 001C,Robbery,Under investigation,
+crime-c,2025-01,Example Constabulary,Example Constabulary,-1.210000,52.100000,On or near Park Lane,E01000004,Example 001D,Robbery,Unable to prosecute suspect,"Public source note"
+crime-d,2025-01,Example Constabulary,Example Constabulary,-1.200000,52.090000,On or near Shopping Area,E01000005,Example 001E,Shoplifting,Local resolution,

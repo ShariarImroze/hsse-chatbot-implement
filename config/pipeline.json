@@ -1,0 +1,32 @@
+{
+  "dataset_name": "master_400K",
+  "dataset_size": 400000,
+  "random_seed": 20260420,
+  "minimum_description_words": 20,
+  "near_duplicate_similarity": 0.96,
+  "case_type_quotas": {
+    "Occupational Safety": 50000,
+    "Occupational Health": 50000,
+    "Process Safety": 50000,
+    "Environment": 50000,
+    "Asset and Reputation Damage/Loss": 50000,
+    "Operational Loss": 50000,
+    "Information Security": 50000,
+    "Physical Security": 50000
+  },
+  "case_type_sources": {
+    "Occupational Safety": "osha_ita_safety",
+    "Occupational Health": "osha_ita_health",
+    "Process Safety": "uscg_nrc_process",
+    "Environment": "caloes_environment",
+    "Asset and Reputation Damage/Loss": "faa_sdr_asset_reputation",
+    "Operational Loss": "fda_operational",
+    "Information Security": "cfpb_information_security",
+    "Physical Security": "police_uk_physical_security"
+  },
+  "splits": {
+    "train": 0.8,
+    "validation": 0.1,
+    "test": 0.1
+  }
+}

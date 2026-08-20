@@ -1,0 +1,54 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "1. Download public source data",
+      "type": "shell",
+      "command": "${workspaceFolder}/.venv/bin/hsse-data",
+      "args": ["download"],
+      "problemMatcher": []
+    },
+    {
+      "label": "2. Build 1K pilot JSON",
+      "type": "shell",
+      "command": "${workspaceFolder}/.venv/bin/hsse-data",
+      "args": ["build", "--config", "${workspaceFolder}/config/pipeline_pilot.json"],
+      "problemMatcher": []
+    },
+    {
+      "label": "3. Build master_400K JSON",
+      "type": "shell",
+      "command": "${workspaceFolder}/.venv/bin/hsse-data",
+      "args": ["build"],
+      "problemMatcher": []
+    },
+    {
+      "label": "4. Validate master dataset",
+      "type": "shell",
+      "command": "${workspaceFolder}/.venv/bin/hsse-data",
+      "args": ["validate"],
+      "problemMatcher": []
+    },
+    {
+      "label": "5. Load free SQLite database",
+      "type": "shell",
+      "command": "${workspaceFolder}/.venv/bin/hsse-data",
+      "args": ["load-sqlite"],
+      "problemMatcher": []
+    },
+    {
+      "label": "Rebuild and validate everything",
+      "type": "shell",
+      "command": "${workspaceFolder}/.venv/bin/hsse-data",
+      "args": ["rebuild"],
+      "problemMatcher": []
+    },
+    {
+      "label": "Run tests",
+      "type": "shell",
+      "command": "${workspaceFolder}/.venv/bin/python",
+      "args": ["-m", "unittest", "discover", "-s", "tests", "-v"],
+      "problemMatcher": []
+    }
+  ]
+}

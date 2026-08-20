@@ -1,0 +1,30 @@
+.DS_Store
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ipynb_checkpoints/
+*.ipynb.legacy
+
+# Local credentials and private keys must never be committed.
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*credentials*.json
+
+# Raw public-source downloads are reproducible and too large for ordinary Git.
+data/raw/
+
+# Generated datasets and databases are local build artifacts.
+data/processed/*
+!data/processed/.gitkeep
+*.sqlite
+*.sqlite3
+
+# Generated quality reports.
+reports/*.json
+reports/*.csv
+reports/*.html
+!reports/.gitkeep

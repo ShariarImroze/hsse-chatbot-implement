@@ -1,0 +1,42 @@
+{
+  "dataset_name": "pilot_1000",
+  "dataset_size": 1000,
+  "random_seed": 20260420,
+  "minimum_description_words": 20,
+  "near_duplicate_similarity": 0.96,
+  "case_type_quotas": {
+    "Occupational Safety": 125,
+    "Occupational Health": 125,
+    "Process Safety": 125,
+    "Environment": 125,
+    "Asset and Reputation Damage/Loss": 125,
+    "Operational Loss": 125,
+    "Information Security": 125,
+    "Physical Security": 125
+  },
+  "case_type_sources": {
+    "Occupational Safety": "osha_ita_safety",
+    "Occupational Health": "osha_ita_health",
+    "Process Safety": "uscg_nrc_process",
+    "Environment": "caloes_environment",
+    "Asset and Reputation Damage/Loss": "faa_sdr_asset_reputation",
+    "Operational Loss": "fda_operational",
+    "Information Security": "cfpb_information_security",
+    "Physical Security": "police_uk_physical_security"
+  },
+  "maximum_rows_per_source": {
+    "osha_ita_safety": 25000,
+    "osha_ita_health": 25000,
+    "uscg_nrc_process": 25000,
+    "caloes_environment": 25000,
+    "faa_sdr_asset_reputation": 25000,
+    "fda_operational": 25000,
+    "cfpb_information_security": 25000,
+    "police_uk_physical_security": 25000
+  },
+  "splits": {
+    "train": 0.8,
+    "validation": 0.1,
+    "test": 0.1
+  }
+}
