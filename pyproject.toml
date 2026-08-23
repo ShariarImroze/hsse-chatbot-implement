@@ -25,12 +25,22 @@ dev = [
   "nbformat>=5.10,<6",
   "pandas>=2.2,<3",
 ]
+chatbot = []
+chatbot-transformers = [
+  "accelerate>=1,<2",
+  "torch>=2.4",
+  "transformers>=5.5,<6",
+]
 
 [project.scripts]
 hsse-data = "incident_pipeline.cli:main"
+hsse-chatbot = "hsse_chatbot.app:main"
 
 [tool.setuptools]
 package-dir = {"" = "src"}
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools.package-data]
+hsse_chatbot = ["static/*.html"]

@@ -1,0 +1,568 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>HSSE Incident Assistant</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --ink: #1e293b;
+      --muted: #64748b;
+      --line: #dbe3ee;
+      --panel: #ffffff;
+      --soft: #f1f5f9;
+      --brand: #2855a6;
+      --brand-dark: #1e3f7c;
+      --user: #e8f0ff;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      background: #f6f8fb;
+      color: var(--ink);
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+    main {
+      width: min(920px, 100%);
+      min-height: 100vh;
+      margin: 0 auto;
+      padding: 24px;
+      display: grid;
+      grid-template-rows: auto 1fr auto;
+      gap: 16px;
+    }
+    header {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 16px;
+    }
+    h1 { margin: 0 0 4px; font-size: clamp(1.35rem, 3vw, 1.8rem); }
+    .subtitle { margin: 0; color: var(--muted); font-size: 0.93rem; }
+    .status {
+      flex: 0 0 auto;
+      padding: 7px 10px;
+      border: 1px solid #bfdbfe;
+      border-radius: 999px;
+      background: #eff6ff;
+      color: var(--brand-dark);
+      font-size: 0.78rem;
+      font-weight: 700;
+    }
+    #chat {
+      min-height: 480px;
+      max-height: calc(100vh - 210px);
+      overflow-y: auto;
+      padding: 20px;
+      border: 1px solid var(--line);
+      border-radius: 16px;
+      background: var(--panel);
+      box-shadow: 0 10px 30px rgba(30, 41, 59, 0.06);
+    }
+    .message { display: flex; margin: 0 0 16px; }
+    .message.user { justify-content: flex-end; }
+    .bubble {
+      max-width: min(760px, 88%);
+      padding: 11px 14px;
+      border-radius: 14px;
+      line-height: 1.5;
+      overflow-wrap: anywhere;
+    }
+    .assistant .bubble { background: var(--soft); border-bottom-left-radius: 4px; }
+    .user .bubble { background: var(--user); border-bottom-right-radius: 4px; }
+    .message.has-chart .bubble { width: min(820px, 96%); max-width: min(820px, 96%); }
+    .chart-card {
+      margin-top: 14px;
+      padding: 16px;
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      background: var(--panel);
+      color: var(--ink);
+    }
+    .chart-card h2 { margin: 0; font-size: 1rem; }
+    .chart-subtitle { margin: 3px 0 16px; color: var(--muted); font-size: 0.8rem; }
+    .chart-plot { width: 100%; min-height: 180px; }
+    .bar-row { display: grid; grid-template-columns: minmax(120px, 32%) 1fr 74px; gap: 9px; align-items: center; margin: 8px 0; }
+    .bar-label { font-size: 0.78rem; line-height: 1.2; text-align: right; }
+    .bar-track { height: 22px; overflow: hidden; border-radius: 4px; background: #edf1f7; }
+    .bar-fill { height: 100%; min-width: 2px; border: 1px solid #1e3f7c; background: #3f6db8; }
+    .bar-value { color: #334155; font: 0.76rem ui-monospace, SFMono-Regular, Menlo, monospace; }
+    .stack { display: flex; height: 24px; overflow: hidden; border-radius: 4px; background: #edf1f7; }
+    .stack-segment { min-width: 0; border-right: 1px solid rgba(255, 255, 255, 0.75); }
+    .chart-legend { display: flex; flex-wrap: wrap; gap: 8px 14px; margin: 0 0 12px; font-size: 0.74rem; }
+    .legend-item { display: inline-flex; align-items: center; gap: 5px; }
+    .legend-swatch { width: 11px; height: 11px; border: 1px solid #334155; border-radius: 2px; }
+    .line-chart { display: block; width: 100%; height: auto; overflow: visible; }
+    .pie-layout { display: grid; grid-template-columns: minmax(160px, 230px) 1fr; gap: 22px; align-items: center; }
+    .pie-mark { width: min(220px, 100%); aspect-ratio: 1; margin: auto; border: 1px solid #334155; border-radius: 50%; }
+    .chart-axis-note { margin: 9px 0 0; color: var(--muted); font-size: 0.72rem; }
+    .chart-data { margin-top: 12px; font-size: 0.76rem; }
+    .chart-data summary { cursor: pointer; color: var(--brand-dark); font-weight: 700; }
+    .chart-data table { width: 100%; margin-top: 8px; border-collapse: collapse; background: white; }
+    .chart-data th, .chart-data td { padding: 6px 7px; border: 1px solid var(--line); text-align: right; }
+    .chart-data th:first-child, .chart-data td:first-child { text-align: left; }
+    .composer { display: grid; grid-template-columns: 1fr auto; gap: 10px; }
+    textarea {
+      width: 100%;
+      min-height: 52px;
+      max-height: 160px;
+      resize: vertical;
+      padding: 13px 14px;
+      border: 1px solid #cbd5e1;
+      border-radius: 12px;
+      color: var(--ink);
+      background: var(--panel);
+      font: inherit;
+    }
+    textarea:focus { outline: 3px solid #dbeafe; border-color: #60a5fa; }
+    button {
+      border: 0;
+      border-radius: 12px;
+      padding: 0 20px;
+      background: var(--brand);
+      color: white;
+      font: inherit;
+      font-weight: 700;
+      cursor: pointer;
+    }
+    button:hover { background: var(--brand-dark); }
+    button:disabled { cursor: wait; opacity: 0.6; }
+    .tools { display: flex; justify-content: space-between; margin-top: 9px; }
+    .hint { color: var(--muted); font-size: 0.8rem; }
+    #reset {
+      padding: 0;
+      background: transparent;
+      color: var(--muted);
+      font-size: 0.8rem;
+      font-weight: 600;
+    }
+    .typing { color: var(--muted); font-style: italic; }
+    .markdown-table-wrap { max-width: 100%; margin: 10px 0; overflow-x: auto; }
+    .markdown-table { width: 100%; border-collapse: collapse; background: #ffffff; font-size: 0.82rem; }
+    .markdown-table th, .markdown-table td { min-width: 110px; padding: 8px 9px; border: 1px solid var(--line); text-align: left; vertical-align: top; }
+    .markdown-table th { background: #e8eef7; color: #243b63; font-weight: 750; }
+    @media (max-width: 620px) {
+      main { padding: 14px; }
+      header { display: block; }
+      .status { display: inline-block; margin-top: 10px; }
+      #chat { min-height: 60vh; max-height: 68vh; padding: 13px; }
+      .bubble { max-width: 94%; }
+      .message.has-chart .bubble { width: 100%; max-width: 100%; }
+      .bar-row { grid-template-columns: 96px 1fr 58px; gap: 6px; }
+      .pie-layout { grid-template-columns: 1fr; }
+      .composer { grid-template-columns: 1fr; }
+      button { min-height: 46px; }
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <header>
+      <div>
+        <h1>HSSE Incident Assistant</h1>
+        <p class="subtitle" id="model">Local Gemma 4 + SQLite retrieval</p>
+      </div>
+      <span class="status" id="status">LOCAL</span>
+    </header>
+
+    <section id="chat" aria-live="polite"></section>
+
+    <section>
+      <form class="composer" id="composer">
+        <textarea id="message" placeholder="Ask about incidents, request a chart, or type “add case”…" required></textarea>
+        <button id="send" type="submit">Send</button>
+      </form>
+      <div class="tools">
+        <span class="hint">Enter sends · Shift+Enter adds a line</span>
+        <button id="reset" type="button">Clear conversation</button>
+      </div>
+    </section>
+  </main>
+
+  <script>
+    const chat = document.getElementById("chat");
+    const form = document.getElementById("composer");
+    const input = document.getElementById("message");
+    const send = document.getElementById("send");
+    const reset = document.getElementById("reset");
+    const storedHistory = (() => {
+      try {
+        const parsed = JSON.parse(localStorage.getItem("hsse-history") || "[]");
+        if (!Array.isArray(parsed)) return [];
+        return parsed.filter(item => item && ["user", "assistant"].includes(item.role) && typeof item.content === "string").slice(-50);
+      } catch (_) {
+        return [];
+      }
+    })();
+    const history = storedHistory;
+    const sessionId = localStorage.getItem("hsse-session") || crypto.randomUUID();
+    localStorage.setItem("hsse-session", sessionId);
+
+    function saveHistory() {
+      try {
+        localStorage.setItem("hsse-history", JSON.stringify(history.slice(-50)));
+      } catch (_) {
+        // The server-side draft remains authoritative if browser storage is full.
+      }
+    }
+
+    function escapeHtml(value) {
+      return value.replace(/[&<>'"]/g, character => ({
+        "&": "&amp;", "<": "&lt;", ">": "&gt;", "'": "&#39;", '"': "&quot;"
+      })[character]);
+    }
+
+    function renderInline(value) {
+      return escapeHtml(value)
+        .replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>")
+        .replace(/`(.+?)`/g, "<code>$1</code>");
+    }
+
+    function tableCells(line) {
+      const cells = [];
+      let current = "";
+      for (let index = 0; index < line.length; index += 1) {
+        const character = line[index];
+        if (character === "\\" && line[index + 1] === "|") {
+          current += "|";
+          index += 1;
+        } else if (character === "|") {
+          cells.push(current.trim());
+          current = "";
+        } else {
+          current += character;
+        }
+      }
+      cells.push(current.trim());
+      if (!cells[0]) cells.shift();
+      if (!cells[cells.length - 1]) cells.pop();
+      return cells;
+    }
+
+    function isTableDivider(line) {
+      const cells = tableCells(line);
+      return cells.length > 0 && cells.every(cell => /^:?-{3,}:?$/.test(cell));
+    }
+
+    function renderText(value) {
+      const lines = value.split("\n");
+      const output = [];
+      for (let index = 0; index < lines.length; index += 1) {
+        if (lines[index].includes("|") && index + 1 < lines.length && isTableDivider(lines[index + 1])) {
+          const headers = tableCells(lines[index]);
+          index += 2;
+          const rows = [];
+          while (index < lines.length && lines[index].includes("|")) {
+            rows.push(tableCells(lines[index]));
+            index += 1;
+          }
+          index -= 1;
+          const head = headers.map(cell => `<th>${renderInline(cell)}</th>`).join("");
+          const body = rows.map(row => `<tr>${row.map(cell => `<td>${renderInline(cell)}</td>`).join("")}</tr>`).join("");
+          output.push(`<div class="markdown-table-wrap"><table class="markdown-table"><thead><tr>${head}</tr></thead><tbody>${body}</tbody></table></div>`);
+        } else if (lines[index]) {
+          output.push(`${renderInline(lines[index])}<br>`);
+        } else {
+          output.push("<br>");
+        }
+      }
+      return output.join("");
+    }
+
+    const chartColors = ["#2855a6", "#d0922e", "#c9653b", "#71804a", "#b55f82", "#6f91c8", "#e0b35f", "#94a3b8", "#465568"];
+
+    function formatNumber(value) {
+      return Number(value).toLocaleString();
+    }
+
+    function addLegend(container, datasets) {
+      const legend = document.createElement("div");
+      legend.className = "chart-legend";
+      datasets.forEach((dataset, index) => {
+        const item = document.createElement("span");
+        item.className = "legend-item";
+        const swatch = document.createElement("span");
+        swatch.className = "legend-swatch";
+        swatch.style.backgroundColor = chartColors[index % chartColors.length];
+        const label = document.createElement("span");
+        label.textContent = dataset.label;
+        item.append(swatch, label);
+        legend.appendChild(item);
+      });
+      container.appendChild(legend);
+    }
+
+    function scaledRatio(value, maximum, logScale) {
+      if (maximum <= 0) return 0;
+      if (!logScale) return value / maximum;
+      return Math.log10(Math.max(1, value)) / Math.log10(Math.max(10, maximum));
+    }
+
+    function renderBars(plot, spec) {
+      const values = spec.datasets[0].values;
+      const maximum = Math.max(...values, 1);
+      spec.labels.forEach((label, index) => {
+        const row = document.createElement("div");
+        row.className = "bar-row";
+        const name = document.createElement("div");
+        name.className = "bar-label";
+        name.textContent = label;
+        const track = document.createElement("div");
+        track.className = "bar-track";
+        const fill = document.createElement("div");
+        fill.className = "bar-fill";
+        fill.style.width = `${Math.max(0.3, scaledRatio(values[index], maximum, spec.log_scale) * 100)}%`;
+        fill.title = `${label}: ${formatNumber(values[index])}`;
+        track.appendChild(fill);
+        const value = document.createElement("span");
+        value.className = "bar-value";
+        value.textContent = formatNumber(values[index]);
+        row.append(name, track, value);
+        plot.appendChild(row);
+      });
+    }
+
+    function renderStacks(plot, spec) {
+      addLegend(plot, spec.datasets);
+      const totals = spec.labels.map((_, index) => spec.datasets.reduce((sum, dataset) => sum + dataset.values[index], 0));
+      const maximum = Math.max(...totals, 1);
+      spec.labels.forEach((label, index) => {
+        const row = document.createElement("div");
+        row.className = "bar-row";
+        const name = document.createElement("div");
+        name.className = "bar-label";
+        name.textContent = label;
+        const track = document.createElement("div");
+        track.className = "bar-track";
+        const stack = document.createElement("div");
+        stack.className = "stack";
+        stack.style.width = `${Math.max(0.3, scaledRatio(totals[index], maximum, spec.log_scale) * 100)}%`;
+        spec.datasets.forEach((dataset, seriesIndex) => {
+          const segment = document.createElement("span");
+          segment.className = "stack-segment";
+          segment.style.width = `${totals[index] ? dataset.values[index] / totals[index] * 100 : 0}%`;
+          segment.style.backgroundColor = chartColors[seriesIndex % chartColors.length];
+          segment.title = `${label} · ${dataset.label}: ${formatNumber(dataset.values[index])}`;
+          stack.appendChild(segment);
+        });
+        track.appendChild(stack);
+        const value = document.createElement("span");
+        value.className = "bar-value";
+        value.textContent = formatNumber(totals[index]);
+        row.append(name, track, value);
+        plot.appendChild(row);
+      });
+    }
+
+    function svgElement(name, attributes = {}) {
+      const element = document.createElementNS("http://www.w3.org/2000/svg", name);
+      Object.entries(attributes).forEach(([key, value]) => element.setAttribute(key, value));
+      return element;
+    }
+
+    function renderLine(plot, spec) {
+      const width = 760, height = 300, left = 58, right = 18, top = 18, bottom = 48;
+      const svg = svgElement("svg", {viewBox: `0 0 ${width} ${height}`, class: "line-chart", role: "img", "aria-label": spec.title});
+      const values = spec.datasets[0].values;
+      const maximum = Math.max(...values, 1);
+      for (let tick = 0; tick <= 4; tick += 1) {
+        const y = top + (height - top - bottom) * (1 - tick / 4);
+        svg.appendChild(svgElement("line", {x1: left, y1: y, x2: width - right, y2: y, stroke: "#dbe3ee", "stroke-width": 1}));
+        const raw = spec.log_scale ? Math.pow(10, Math.log10(Math.max(10, maximum)) * tick / 4) : maximum * tick / 4;
+        const text = svgElement("text", {x: left - 8, y: y + 4, "text-anchor": "end", fill: "#64748b", "font-size": 11});
+        text.textContent = formatNumber(Math.round(raw));
+        svg.appendChild(text);
+      }
+      const points = values.map((value, index) => {
+        const x = left + (values.length === 1 ? 0.5 : index / (values.length - 1)) * (width - left - right);
+        const ratio = scaledRatio(value, maximum, spec.log_scale);
+        return [x, top + (1 - ratio) * (height - top - bottom)];
+      });
+      svg.appendChild(svgElement("polyline", {points: points.map(point => point.join(",")).join(" "), fill: "none", stroke: "#2855a6", "stroke-width": 3, "stroke-linejoin": "round"}));
+      const labelStep = Math.max(1, Math.ceil(spec.labels.length / 8));
+      points.forEach((point, index) => {
+        const circle = svgElement("circle", {cx: point[0], cy: point[1], r: 4, fill: "#ffffff", stroke: "#1e3f7c", "stroke-width": 2});
+        const title = svgElement("title");
+        title.textContent = `${spec.labels[index]}: ${formatNumber(values[index])}`;
+        circle.appendChild(title);
+        svg.appendChild(circle);
+        if (index % labelStep === 0 || index === spec.labels.length - 1) {
+          const text = svgElement("text", {x: point[0], y: height - 20, "text-anchor": "middle", fill: "#64748b", "font-size": 11});
+          text.textContent = spec.labels[index];
+          svg.appendChild(text);
+        }
+      });
+      plot.appendChild(svg);
+    }
+
+    function renderPie(plot, spec) {
+      const layout = document.createElement("div");
+      layout.className = "pie-layout";
+      const pie = document.createElement("div");
+      pie.className = "pie-mark";
+      pie.setAttribute("role", "img");
+      pie.setAttribute("aria-label", spec.title);
+      const values = spec.datasets[0].values;
+      const total = values.reduce((sum, value) => sum + value, 0);
+      let start = 0;
+      const stops = values.map((value, index) => {
+        const end = start + (total ? value / total * 100 : 0);
+        const stop = `${chartColors[index % chartColors.length]} ${start}% ${end}%`;
+        start = end;
+        return stop;
+      });
+      pie.style.background = `conic-gradient(${stops.join(",")})`;
+      const legendHolder = document.createElement("div");
+      const datasets = spec.labels.map((label, index) => ({label: `${label} · ${formatNumber(values[index])}`}));
+      addLegend(legendHolder, datasets);
+      layout.append(pie, legendHolder);
+      plot.appendChild(layout);
+    }
+
+    function addDataTable(card, spec) {
+      const details = document.createElement("details");
+      details.className = "chart-data";
+      const summary = document.createElement("summary");
+      summary.textContent = "Exact values";
+      const table = document.createElement("table");
+      const head = document.createElement("thead");
+      const headRow = document.createElement("tr");
+      [spec.x_label, ...spec.datasets.map(dataset => dataset.label)].forEach(label => {
+        const th = document.createElement("th");
+        th.textContent = label;
+        headRow.appendChild(th);
+      });
+      head.appendChild(headRow);
+      const body = document.createElement("tbody");
+      spec.labels.forEach((label, index) => {
+        const row = document.createElement("tr");
+        const name = document.createElement("td");
+        name.textContent = label;
+        row.appendChild(name);
+        spec.datasets.forEach(dataset => {
+          const value = document.createElement("td");
+          value.textContent = formatNumber(dataset.values[index]);
+          row.appendChild(value);
+        });
+        body.appendChild(row);
+      });
+      table.append(head, body);
+      details.append(summary, table);
+      card.appendChild(details);
+    }
+
+    function renderChart(spec) {
+      const card = document.createElement("section");
+      card.className = "chart-card";
+      const title = document.createElement("h2");
+      title.textContent = spec.title;
+      const subtitle = document.createElement("p");
+      subtitle.className = "chart-subtitle";
+      subtitle.textContent = `${spec.subtitle}${spec.log_scale ? " · Logarithmic value scale" : ""}`;
+      const plot = document.createElement("div");
+      plot.className = "chart-plot";
+      if (spec.type === "line") renderLine(plot, spec);
+      else if (spec.type === "pie") renderPie(plot, spec);
+      else if (spec.type === "stacked_bar") renderStacks(plot, spec);
+      else renderBars(plot, spec);
+      const axisNote = document.createElement("p");
+      axisNote.className = "chart-axis-note";
+      axisNote.textContent = `${spec.x_label} · ${spec.y_label}`;
+      card.append(title, subtitle, plot, axisNote);
+      addDataTable(card, spec);
+      return card;
+    }
+
+    function addMessage(role, content, temporary = false, charts = []) {
+      const row = document.createElement("div");
+      row.className = `message ${role}`;
+      if (charts.length) row.classList.add("has-chart");
+      if (temporary) row.id = "typing";
+      const bubble = document.createElement("div");
+      bubble.className = `bubble${temporary ? " typing" : ""}`;
+      bubble.innerHTML = renderText(content);
+      charts.forEach(chartSpec => bubble.appendChild(renderChart(chartSpec)));
+      row.appendChild(bubble);
+      chat.appendChild(row);
+      chat.scrollTop = chat.scrollHeight;
+    }
+
+    async function loadStatus() {
+      try {
+        const response = await fetch("/api/status");
+        const data = await response.json();
+        document.getElementById("model").textContent = `${data.model} via ${data.backend} · ${data.source_cases.toLocaleString()} source cases · ${data.user_cases.toLocaleString()} local cases`;
+      } catch (_) {
+        document.getElementById("status").textContent = "OFFLINE";
+      }
+    }
+
+    async function submitMessage(message) {
+      addMessage("user", message);
+      const priorHistory = history.slice(-16);
+      history.push({role: "user", content: message});
+      saveHistory();
+      addMessage("assistant", "Thinking locally…", true);
+      send.disabled = true;
+      input.disabled = true;
+      try {
+        const response = await fetch("/api/chat", {
+          method: "POST",
+          headers: {"Content-Type": "application/json"},
+          body: JSON.stringify({session_id: sessionId, message, history: priorHistory})
+        });
+        const data = await response.json();
+        document.getElementById("typing")?.remove();
+        const reply = response.ok ? data.reply : `Error: ${data.error || "request failed"}`;
+        addMessage("assistant", reply, false, response.ok ? (data.charts || []) : []);
+        history.push({role: "assistant", content: reply});
+        saveHistory();
+      } catch (error) {
+        document.getElementById("typing")?.remove();
+        addMessage("assistant", `Connection error: ${error.message}`);
+      } finally {
+        send.disabled = false;
+        input.disabled = false;
+        input.focus();
+      }
+    }
+
+    form.addEventListener("submit", event => {
+      event.preventDefault();
+      const message = input.value.trim();
+      if (!message) return;
+      input.value = "";
+      submitMessage(message);
+    });
+
+    input.addEventListener("keydown", event => {
+      if (event.key === "Enter" && !event.shiftKey) {
+        event.preventDefault();
+        form.requestSubmit();
+      }
+    });
+
+    reset.addEventListener("click", async () => {
+      history.length = 0;
+      localStorage.removeItem("hsse-history");
+      chat.innerHTML = "";
+      await fetch("/api/reset", {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({session_id: sessionId})
+      });
+      addMessage("assistant", "Conversation cleared. Ask about an incident or type **add case**.");
+    });
+
+    if (history.length) {
+      history.forEach(item => addMessage(item.role, item.content));
+    } else {
+      addMessage("assistant", "Hello — I can query all **400,000 source cases** for exact counts, filters, grouped totals, paginated lists, and charts. Type **add case** to create an incident step by step.");
+    }
+    loadStatus();
+    input.focus();
+  </script>
+</body>
+</html>

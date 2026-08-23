@@ -2,9 +2,11 @@
 .venv/
 __pycache__/
 *.py[cod]
+*.egg-info/
 .pytest_cache/
 .ipynb_checkpoints/
 *.ipynb.legacy
+notebooks/test.ipynb
 
 # Local credentials and private keys must never be committed.
 .env
@@ -20,6 +22,7 @@ data/raw/
 # Generated datasets and databases are local build artifacts.
 data/processed/*
 !data/processed/.gitkeep
+data/local/
 *.sqlite
 *.sqlite3
 
