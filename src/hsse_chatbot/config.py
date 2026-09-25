@@ -7,8 +7,33 @@ from dataclasses import dataclass
 from pathlib import Path
 
 
-DEFAULT_MODEL_ID = "google/gemma-4-E4B-it-qat-q4_0-gguf:Q4_0"
-DEFAULT_TRANSFORMERS_MODEL_ID = "google/gemma-4-E4B-it"
+@dataclass(frozen=True)
+class ModelProfile:
+    """One selectable OpenAI-compatible model backend."""
+
+    key: str
+    label: str
+    model_id: str
+    base_url: str
+
+
+MODEL_PROFILES = (
+    ModelProfile(
+        "llama31",
+        "Meta Llama 3.1 8B Instruct",
+        "bartowski/Meta-Llama-3.1-8B-Instruct-GGUF:Q4_K_M",
+        "http://127.0.0.1:8080/v1",
+    ),
+    ModelProfile(
+        "mistral",
+        "Mistral 7B Instruct v0.3",
+        "bartowski/Mistral-7B-Instruct-v0.3-GGUF:Q4_K_M",
+        "http://127.0.0.1:8082/v1",
+    ),
+)
+DEFAULT_MODEL_KEY = "llama31"
+DEFAULT_MODEL_ID = MODEL_PROFILES[0].model_id
+DEFAULT_TRANSFORMERS_MODEL_ID = "meta-llama/Meta-Llama-3.1-8B-Instruct"
 
 
 def _environment_flag(name: str, default: bool = False) -> bool:
@@ -25,6 +50,7 @@ class ChatbotConfig:
     project_root: Path
     database_path: Path
     user_database_path: Path
+    model_key: str = DEFAULT_MODEL_KEY
     model_id: str = DEFAULT_MODEL_ID
     backend: str = "llama-cpp"
     model_base_url: str = "http://127.0.0.1:8080/v1"

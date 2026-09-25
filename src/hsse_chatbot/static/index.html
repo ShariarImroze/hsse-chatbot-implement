@@ -30,7 +30,7 @@
       margin: 0 auto;
       padding: 24px;
       display: grid;
-      grid-template-rows: auto 1fr auto;
+      grid-template-rows: auto auto 1fr auto;
       gap: 16px;
     }
     header {
@@ -41,6 +41,7 @@
     }
     h1 { margin: 0 0 4px; font-size: clamp(1.35rem, 3vw, 1.8rem); }
     .subtitle { margin: 0; color: var(--muted); font-size: 0.93rem; }
+    .model-attribution { margin-top: 3px; color: var(--muted); font-size: 0.72rem; }
     .status {
       flex: 0 0 auto;
       padding: 7px 10px;
@@ -51,6 +52,23 @@
       font-size: 0.78rem;
       font-weight: 700;
     }
+    .model-switcher { display: flex; flex-wrap: wrap; gap: 8px; }
+    .model-button {
+      min-height: 36px;
+      padding: 7px 12px;
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      background: var(--panel);
+      color: var(--ink);
+      font-size: 0.78rem;
+    }
+    .model-button:hover { background: #e8eef7; }
+    .model-button.active {
+      border-color: var(--brand);
+      background: var(--brand);
+      color: white;
+    }
+    .model-tag { margin-bottom: 5px; color: var(--muted); font-size: 0.68rem; font-weight: 700; }
     #chat {
       min-height: 480px;
       max-height: calc(100vh - 210px);
@@ -162,10 +180,13 @@
     <header>
       <div>
         <h1>HSSE Incident Assistant</h1>
-        <p class="subtitle" id="model">Local Gemma 4 + SQLite retrieval</p>
+        <p class="subtitle" id="model">Local Meta Llama 3 + SQLite retrieval</p>
+        <p class="model-attribution">Built with Meta Llama 3</p>
       </div>
       <span class="status" id="status">LOCAL</span>
     </header>
+
+    <nav class="model-switcher" id="model-switcher" aria-label="Choose language model"></nav>
 
     <section id="chat" aria-live="polite"></section>
 
@@ -187,6 +208,9 @@
     const input = document.getElementById("message");
     const send = document.getElementById("send");
     const reset = document.getElementById("reset");
+    const modelSwitcher = document.getElementById("model-switcher");
+    let modelCatalog = [];
+    let selectedModelKey = localStorage.getItem("hsse-model-key") || "llama31";
     const storedHistory = (() => {
       try {
         const parsed = JSON.parse(localStorage.getItem("hsse-history") || "[]");
@@ -197,7 +221,7 @@
       }
     })();
     const history = storedHistory;
-    const sessionId = localStorage.getItem("hsse-session") || crypto.randomUUID();
+    let sessionId = localStorage.getItem("hsse-session") || crypto.randomUUID();
     localStorage.setItem("hsse-session", sessionId);
 
     function saveHistory() {
@@ -475,14 +499,22 @@
       return card;
     }
 
-    function addMessage(role, content, temporary = false, charts = []) {
+    function addMessage(role, content, temporary = false, charts = [], modelLabel = "") {
       const row = document.createElement("div");
       row.className = `message ${role}`;
       if (charts.length) row.classList.add("has-chart");
       if (temporary) row.id = "typing";
       const bubble = document.createElement("div");
       bubble.className = `bubble${temporary ? " typing" : ""}`;
-      bubble.innerHTML = renderText(content);
+      if (role === "assistant" && modelLabel) {
+        const tag = document.createElement("div");
+        tag.className = "model-tag";
+        tag.textContent = modelLabel;
+        bubble.appendChild(tag);
+      }
+      const text = document.createElement("div");
+      text.innerHTML = renderText(content);
+      bubble.appendChild(text);
       charts.forEach(chartSpec => bubble.appendChild(renderChart(chartSpec)));
       row.appendChild(bubble);
       chat.appendChild(row);
@@ -491,11 +523,60 @@
 
     async function loadStatus() {
       try {
-        const response = await fetch("/api/status");
-        const data = await response.json();
-        document.getElementById("model").textContent = `${data.model} via ${data.backend} · ${data.source_cases.toLocaleString()} source cases · ${data.user_cases.toLocaleString()} local cases`;
+        const [statusResponse, modelsResponse] = await Promise.all([
+          fetch("/api/status"), fetch("/api/models")
+        ]);
+        const data = await statusResponse.json();
+        const modelsData = await modelsResponse.json();
+        modelCatalog = modelsData.models || [];
+        if (!modelCatalog.some(model => model.key === selectedModelKey)) {
+          selectedModelKey = modelsData.default_model_key;
+        }
+        renderModelSwitcher();
+        updateModelStatus(data);
       } catch (_) {
         document.getElementById("status").textContent = "OFFLINE";
+      }
+    }
+
+    function selectedModel() {
+      return modelCatalog.find(model => model.key === selectedModelKey);
+    }
+
+    function updateModelStatus(statusData) {
+      const model = selectedModel();
+      const label = model ? model.label : selectedModelKey;
+      document.getElementById("model").textContent = `${label} · ${statusData.source_cases.toLocaleString()} source cases · ${statusData.user_cases.toLocaleString()} local cases`;
+    }
+
+    function renderModelSwitcher() {
+      modelSwitcher.innerHTML = "";
+      modelCatalog.forEach(model => {
+        const button = document.createElement("button");
+        button.type = "button";
+        button.className = `model-button${model.key === selectedModelKey ? " active" : ""}`;
+        button.textContent = model.label;
+        button.title = `${model.model_id} at ${model.base_url}`;
+        button.addEventListener("click", () => {
+          selectedModelKey = model.key;
+          localStorage.setItem("hsse-model-key", selectedModelKey);
+          renderModelSwitcher();
+          loadStatus();
+        });
+        modelSwitcher.appendChild(button);
+      });
+    }
+
+    async function syncStoredHistory() {
+      if (!history.length) return;
+      try {
+        await fetch("/api/history/sync", {
+          method: "POST",
+          headers: {"Content-Type": "application/json"},
+          body: JSON.stringify({session_id: sessionId, history})
+        });
+      } catch (_) {
+        // A later successful exchange will still be recorded by the server.
       }
     }
 
@@ -511,13 +592,13 @@
         const response = await fetch("/api/chat", {
           method: "POST",
           headers: {"Content-Type": "application/json"},
-          body: JSON.stringify({session_id: sessionId, message, history: priorHistory})
+          body: JSON.stringify({session_id: sessionId, message, history: priorHistory, model_key: selectedModelKey})
         });
         const data = await response.json();
         document.getElementById("typing")?.remove();
         const reply = response.ok ? data.reply : `Error: ${data.error || "request failed"}`;
-        addMessage("assistant", reply, false, response.ok ? (data.charts || []) : []);
-        history.push({role: "assistant", content: reply});
+        addMessage("assistant", reply, false, response.ok ? (data.charts || []) : [], data.model_label || "");
+        history.push({role: "assistant", content: reply, model_label: data.model_label || ""});
         saveHistory();
       } catch (error) {
         document.getElementById("typing")?.remove();
@@ -553,14 +634,17 @@
         headers: {"Content-Type": "application/json"},
         body: JSON.stringify({session_id: sessionId})
       });
+      sessionId = crypto.randomUUID();
+      localStorage.setItem("hsse-session", sessionId);
       addMessage("assistant", "Conversation cleared. Ask about an incident or type **add case**.");
     });
 
     if (history.length) {
-      history.forEach(item => addMessage(item.role, item.content));
+      history.forEach(item => addMessage(item.role, item.content, false, [], item.model_label || ""));
     } else {
       addMessage("assistant", "Hello — I can query all **400,000 source cases** for exact counts, filters, grouped totals, paginated lists, and charts. Type **add case** to create an incident step by step.");
     }
+    syncStoredHistory();
     loadStatus();
     input.focus();
   </script>

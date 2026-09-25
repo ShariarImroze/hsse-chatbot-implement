@@ -71,6 +71,50 @@ def _create_source_database(path: Path) -> None:
         connection.close()
 
 
+def _insert_source_case(
+    path: Path, case_no: str, description: str, case_type: str
+) -> None:
+    connection = sqlite3.connect(path)
+    try:
+        cursor = connection.execute(
+            """
+            INSERT INTO incidents (
+                case_no, country, title, description, case_type, hazard,
+                hazard_type, actual_severity, potential_severity, source
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                case_no,
+                "United States of America",
+                f"Test report {case_no}",
+                description,
+                case_type,
+                "Mechanical integrity",
+                "Mechanical",
+                "Medium",
+                "Severe",
+                "TEST_SOURCE",
+            ),
+        )
+        connection.execute(
+            """
+            INSERT INTO incidents_fts(
+                rowid, case_no, title, description, hazard
+            ) VALUES (?, ?, ?, ?, ?)
+            """,
+            (
+                cursor.lastrowid,
+                case_no,
+                f"Test report {case_no}",
+                description,
+                "Mechanical integrity",
+            ),
+        )
+        connection.commit()
+    finally:
+        connection.close()
+
+
 class _FakeGenerator:
     def __init__(self) -> None:
         self.messages = []
@@ -130,6 +174,48 @@ class ChatbotTests(unittest.TestCase):
         final_prompt = generator.messages[-1]["content"]
         self.assertIn("Case: TEST:001", final_prompt)
         self.assertIn("balanced", generator.messages[0]["content"])
+
+    def test_completed_chat_exchange_is_saved_for_review(self) -> None:
+        service = ChatService(
+            self.config, repository=self.repository, generator=_FakeGenerator()
+        )
+        application = ChatApplication(service)
+        result = application.chat(
+            "review-session-01", "What pump fires are available?", []
+        )
+        with self.repository._user_connection() as connection:
+            conversation = connection.execute(
+                "SELECT title FROM chat_conversations WHERE session_id = ?",
+                ("review-session-01",),
+            ).fetchone()
+            messages = connection.execute(
+                """
+                SELECT role, content, model_key, model_id, latency_ms
+                FROM chat_messages
+                WHERE session_id = ? ORDER BY id
+                """,
+                ("review-session-01",),
+            ).fetchall()
+        self.assertEqual(conversation["title"], "What pump fires are available?")
+        self.assertEqual([row["role"] for row in messages], ["user", "assistant"])
+        self.assertEqual(messages[1]["content"], result["reply"])
+        self.assertEqual(messages[1]["model_key"], "llama31")
+        self.assertEqual(messages[1]["model_id"], self.config.model_id)
+        self.assertIsInstance(messages[1]["latency_ms"], int)
+
+    def test_browser_history_can_be_imported_without_duplicates(self) -> None:
+        history = [
+            {"role": "user", "content": "First question"},
+            {"role": "assistant", "content": "First answer"},
+        ]
+        self.repository.replace_chat_history("review-session-02", history)
+        self.repository.replace_chat_history("review-session-02", history)
+        with self.repository._user_connection() as connection:
+            count = connection.execute(
+                "SELECT COUNT(*) FROM chat_messages WHERE session_id = ?",
+                ("review-session-02",),
+            ).fetchone()[0]
+        self.assertEqual(count, 2)
 
     def test_plain_language_count_uses_complete_dataset_query(self) -> None:
         service = ChatService(
@@ -255,6 +341,115 @@ class ChatbotTests(unittest.TestCase):
             count = connection.execute("SELECT COUNT(*) FROM incidents").fetchone()[0]
         self.assertEqual(count, 1)
 
+    def test_chart_applies_explicit_or_keyword_search(self) -> None:
+        _insert_source_case(
+            self.source_database,
+            "TEST:CRACK-1",
+            "Inspection identified a crack across the pressure-containing surface.",
+            "Process Safety",
+        )
+        _insert_source_case(
+            self.source_database,
+            "TEST:CRACK-2",
+            "Technicians found several cracks during a routine equipment inspection.",
+            "Occupational Safety",
+        )
+        _insert_source_case(
+            self.source_database,
+            "TEST:CRACKED",
+            "The external housing was cracked after an impact during transport.",
+            "Operational Loss",
+        )
+
+        class _UnfilteredChartGenerator:
+            def generate(self, messages):
+                return json.dumps(
+                    {
+                        "chart_type": "bar",
+                        "group_by": ["case_type"],
+                        "top_n": 10,
+                        "log_scale": False,
+                        "title": "Reports containing crack or cracks",
+                        "search_text": None,
+                        "search_mode": "all",
+                    }
+                )
+
+        service = ChatService(
+            self.config,
+            repository=self.repository,
+            generator=_UnfilteredChartGenerator(),
+        )
+        _, charts, _ = service.respond_with_artifacts(
+            'Find reports containing the words "crack" or "cracks" and show '
+            "a bar chart by case type.",
+            [],
+            None,
+        )
+        counts = dict(
+            zip(charts[0]["labels"], charts[0]["datasets"][0]["values"])
+        )
+        self.assertEqual(
+            counts, {"Occupational Safety": 1, "Process Safety": 1}
+        )
+        self.assertIn("2 matching source cases", charts[0]["subtitle"])
+
+        _, unquoted_charts, _ = service.respond_with_artifacts(
+            "Locate reports containing the exact words crack or cracks. "
+            "Show a bar chart by case type.",
+            [],
+            None,
+        )
+        unquoted_counts = dict(
+            zip(
+                unquoted_charts[0]["labels"],
+                unquoted_charts[0]["datasets"][0]["values"],
+            )
+        )
+        self.assertEqual(
+            unquoted_counts, {"Occupational Safety": 1, "Process Safety": 1}
+        )
+
+    def test_correction_prompt_replaces_bad_title_filters_with_keyword_search(self) -> None:
+        _insert_source_case(
+            self.source_database,
+            "TEST:CRACK-3",
+            "The report narrative documents cracks in a structural component.",
+            "Asset and Reputation Damage/Loss",
+        )
+
+        class _BadFilterGenerator:
+            def generate(self, messages):
+                return json.dumps(
+                    {
+                        "operation": "group_count",
+                        "filters": [
+                            {"field": "title", "operator": "contains", "value": "crack"},
+                            {"field": "title", "operator": "contains", "value": "cracks"},
+                        ],
+                        "group_by": ["case_type"],
+                        "search_text": None,
+                        "search_mode": "all",
+                        "limit": 20,
+                        "offset": 0,
+                        "columns": ["case_no", "case_type"],
+                    }
+                )
+
+        service = ChatService(
+            self.config,
+            repository=self.repository,
+            generator=_BadFilterGenerator(),
+        )
+        reply, _ = service.respond(
+            'Show the reports containing the word "crack" or "cracks" by case type.',
+            [],
+            None,
+        )
+        self.assertIn("Asset and Reputation Damage/Loss", reply)
+        self.assertIn("| 1 |", reply)
+        self.assertNotIn("No source-corpus incidents", reply)
+
     def test_llama_cpp_backend_uses_local_chat_completions_api(self) -> None:
         response = mock.MagicMock()
         response.read.return_value = (
@@ -270,10 +465,8 @@ class ChatbotTests(unittest.TestCase):
             request.full_url, "http://127.0.0.1:8080/v1/chat/completions"
         )
         payload = json.loads(request.data)
-        self.assertEqual(
-            payload["chat_template_kwargs"], {"enable_thinking": False}
-        )
-        self.assertEqual(payload["thinking_budget_tokens"], 0)
+        self.assertNotIn("chat_template_kwargs", payload)
+        self.assertNotIn("thinking_budget_tokens", payload)
 
     def test_llama_cpp_backend_accepts_openai_content_parts(self) -> None:
         response = mock.MagicMock()

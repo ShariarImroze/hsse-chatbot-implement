@@ -1,4 +1,4 @@
-"""Lazy local inference for the instruction-tuned Gemma 4 model."""
+"""Lazy local inference through llama.cpp or Transformers."""
 
 from __future__ import annotations
 
@@ -28,24 +28,19 @@ class LlamaCppServerGenerator:
         self._lock = Lock()
 
     def generate(self, messages: list[dict[str, str]]) -> str:
-        payload = {
+        payload: dict[str, object] = {
             "model": self.config.model_id,
             "messages": messages,
             "max_tokens": self.config.max_new_tokens,
             "temperature": self.config.temperature,
             "stream": False,
-            # Gemma 4 supports thinking, and recent llama.cpp builds may enable it
-            # from the model's chat template even when the caller did not ask for
-            # it.  With a bounded output budget, the hidden reasoning can consume
-            # every token; llama.cpp then returns reasoning_content while content
-            # is empty.  Set both supported request controls so normal chatbot
-            # turns always leave room for the user-visible answer.
-            "chat_template_kwargs": {
-                "enable_thinking": self.config.enable_thinking,
-            },
         }
-        if not self.config.enable_thinking:
-            payload["thinking_budget_tokens"] = 0
+        if "gemma" in self.config.model_id.casefold():
+            payload["chat_template_kwargs"] = {
+                "enable_thinking": self.config.enable_thinking,
+            }
+            if not self.config.enable_thinking:
+                payload["thinking_budget_tokens"] = 0
         request = Request(
             f"{self.config.model_base_url}/chat/completions",
             data=json.dumps(payload).encode("utf-8"),
@@ -77,9 +72,8 @@ class LlamaCppServerGenerator:
         except URLError as error:
             raise ModelLoadError(
                 "Cannot reach the local llama.cpp server at "
-                f"{self.config.model_base_url}. Start it with: "
-                "llama serve -hf "
-                "google/gemma-4-E4B-it-qat-q4_0-gguf:Q4_0"
+                f"{self.config.model_base_url}. Start the configured model with: "
+                f"llama-server -hf {self.config.model_id}"
             ) from error
         except (KeyError, IndexError, TypeError, ValueError, json.JSONDecodeError) as error:
             raise ModelLoadError(
@@ -105,8 +99,8 @@ class LlamaCppServerGenerator:
         return ""
 
 
-class LocalGemmaGenerator:
-    """Load Gemma on first use and serialize generation across UI sessions."""
+class LocalTransformersGenerator:
+    """Load a causal language model lazily and serialize local generation."""
 
     def __init__(self, config: ChatbotConfig) -> None:
         self.config = config
@@ -124,13 +118,13 @@ class LocalGemmaGenerator:
             return
         try:
             import torch
-            from transformers import AutoModelForMultimodalLM, AutoProcessor
+            from transformers import AutoModelForCausalLM, AutoTokenizer
 
-            processor = AutoProcessor.from_pretrained(
+            tokenizer = AutoTokenizer.from_pretrained(
                 self.config.model_id,
                 local_files_only=self.config.local_files_only,
             )
-            model = AutoModelForMultimodalLM.from_pretrained(
+            model = AutoModelForCausalLM.from_pretrained(
                 self.config.model_id,
                 dtype="auto",
                 device_map="auto",
@@ -148,24 +142,30 @@ class LocalGemmaGenerator:
                 f"Underlying error: {error}"
             ) from error
         self._torch = torch
-        self._processor = processor
+        self._processor = tokenizer
         self._model = model
 
     def generate(self, messages: list[dict[str, str]]) -> str:
         with self._lock:
             self._load()
-            processor = self._processor
+            tokenizer = self._processor
             model = self._model
             torch = self._torch
             try:
-                inputs = processor.apply_chat_template(
-                    messages,
-                    tokenize=True,
-                    return_dict=True,
-                    return_tensors="pt",
-                    add_generation_prompt=True,
-                    enable_thinking=self.config.enable_thinking,
-                ).to(model.device)
+                if getattr(tokenizer, "chat_template", None):
+                    inputs = tokenizer.apply_chat_template(
+                        messages,
+                        tokenize=True,
+                        return_dict=True,
+                        return_tensors="pt",
+                        add_generation_prompt=True,
+                    ).to(model.device)
+                else:
+                    prompt = "\n\n".join(
+                        f"{item['role'].title()}:\n{item['content']}"
+                        for item in messages
+                    ) + "\n\nAssistant:\n"
+                    inputs = tokenizer(prompt, return_tensors="pt").to(model.device)
                 input_length = inputs["input_ids"].shape[-1]
                 generation_options: dict[str, object] = {
                     "max_new_tokens": self.config.max_new_tokens,
@@ -175,42 +175,16 @@ class LocalGemmaGenerator:
                     generation_options["temperature"] = self.config.temperature
                 with torch.inference_mode():
                     outputs = model.generate(**inputs, **generation_options)
-                raw_response = processor.decode(
-                    outputs[0][input_length:], skip_special_tokens=False
-                )
-                parsed = processor.parse_response(raw_response)
-                response = self._response_text(parsed)
-                if response:
-                    return response.strip()
-                return processor.decode(
+                return tokenizer.decode(
                     outputs[0][input_length:], skip_special_tokens=True
                 ).strip()
             except ModelLoadError:
                 raise
             except Exception as error:
-                raise ModelLoadError(f"Gemma generation failed: {error}") from error
-
-    @classmethod
-    def _response_text(cls, parsed: object) -> str:
-        if isinstance(parsed, str):
-            return parsed
-        if isinstance(parsed, dict):
-            for key in ("final", "response", "text", "content"):
-                if key in parsed:
-                    text = cls._response_text(parsed[key])
-                    if text:
-                        return text
-            for value in parsed.values():
-                text = cls._response_text(value)
-                if text:
-                    return text
-        if isinstance(parsed, (list, tuple)):
-            parts = [cls._response_text(value) for value in parsed]
-            return "\n".join(part for part in parts if part)
-        return ""
+                raise ModelLoadError(f"Local generation failed: {error}") from error
 
 
 def create_generator(config: ChatbotConfig) -> ChatGenerator:
     if config.backend == "llama-cpp":
         return LlamaCppServerGenerator(config)
-    return LocalGemmaGenerator(config)
+    return LocalTransformersGenerator(config)

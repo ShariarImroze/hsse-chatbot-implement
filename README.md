@@ -109,23 +109,19 @@ Regenerate and execute them with:
 .venv/bin/python scripts/execute_notebook.py notebooks/hsse_exploratory_analysis.ipynb
 ```
 
-## Local Gemma chatbot
+## Local multi-model chatbot
 
-The project includes a local retrieval-augmented chatbot. The practical default
-for a 16 GB Apple Silicon machine is Google's instruction-tuned, quantized
-[`google/gemma-4-E4B-it-qat-q4_0-gguf`](https://huggingface.co/google/gemma-4-E4B-it-qat-q4_0-gguf)
-checkpoint served by llama.cpp. The full
-[`google/gemma-4-E4B-it`](https://huggingface.co/google/gemma-4-E4B-it)
-Transformers checkpoint remains supported for machines with more memory. The
-base checkpoint from the original link is intended for continued training; the
-`-it` variant is the appropriate default for chat.
+The project includes a local retrieval-augmented chatbot with buttons for Meta
+Llama 3.1 8B Instruct and Mistral 7B Instruct v0.3. Each button targets a
+separate OpenAI-compatible llama.cpp endpoint. Both use practical Q4_K_M
+quantizations for a 16 GB Apple Silicon machine.
 
-The 400K corpus is not copied into the prompt or fine-tuned into the model.
+The 400K corpus is not copied into a prompt or treated as model memory.
 Instead, narrative questions retrieve a small group of relevant records and
-supply them to Gemma as evidence. This keeps the application local, auditable,
+supply them to Llama 3 as evidence. This keeps the application local, auditable,
 and much lighter than full-model fine-tuning.
 
-Structured dataset questions also use a full-corpus query tool. Gemma translates
+Structured dataset questions also use a full-corpus query tool. The selected model translates
 the request into a constrained JSON plan, the application validates every field,
 operator, category, output column, limit, and offset, and SQLite executes a
 parameterized read-only query over all 400,000 source rows. This provides exact
@@ -143,10 +139,9 @@ python -m pip install -e ".[chatbot]"
 brew install llama.cpp
 ```
 
-The full E4B checkpoint is an 8B-parameter BF16 model with an approximately
-16 GB weight file, before inference overhead. The official Q4_0 GGUF checkpoint
-uses quantization-aware training to reduce memory requirements and is therefore
-the recommended local backend for this machine.
+The full checkpoint has 8 billion parameters and requires substantially more
+memory than the roughly 4.9 GB Q4_K_M GGUF file. The quantized checkpoint is
+therefore the recommended local backend for this machine.
 
 ### Run
 
@@ -154,8 +149,11 @@ Ensure `data/processed/hsse_incidents.sqlite` exists. In terminal 1, start the
 local model server using the command published on the GGUF model card:
 
 ```bash
-llama serve -hf google/gemma-4-E4B-it-qat-q4_0-gguf:Q4_0
+llama-server -hf bartowski/Meta-Llama-3.1-8B-Instruct-GGUF:Q4_K_M --port 8080
 ```
+
+The optional Mistral endpoint is documented in
+[`docs/MODEL_TRAINING.md`](docs/MODEL_TRAINING.md).
 
 The first run downloads the model to the local Hugging Face cache. In terminal 2,
 start the loopback-only chatbot UI:
@@ -192,12 +190,12 @@ python -m pip install -e ".[chatbot-transformers]"
 hf auth login
 hsse-chatbot \
   --backend transformers \
-  --model-id google/gemma-4-E4B-it \
+  --model-id meta-llama/Meta-Llama-3.1-8B-Instruct \
   --open-browser
 ```
 
 After the full checkpoint is cached, add `--local-files-only` to prevent model
-downloads or network lookups. Add `--thinking` to enable Gemma's thinking mode.
+downloads or network lookups.
 
 ### Add cases through chat
 
@@ -206,7 +204,7 @@ Type `add case`. The assistant collects and validates one field at a time:
 1. Country
 2. Title
 3. Description (at least 20 words)
-4. Case type (Gemma suggests one from the title and description, then asks you
+4. Case type (the local model suggests one from the title and description, then asks you
    to confirm or override it)
 5. Hazard
 6. Hazard type
@@ -223,6 +221,13 @@ an application or browser restart. Clearing the conversation or typing `cancel`
 deletes the draft. Asking whether a case was recorded reports its draft/saved
 status without restarting or advancing the wizard.
 
+Completed exchanges are also stored locally in `data/local/user_cases.sqlite`,
+including the selected model ID and response latency.
+Clearing the browser starts a new conversation without deleting the archived
+transcript. The optional local Codex plugin in `plugins/hsse-chat-history/`
+provides read-only tools to list, retrieve, and search these conversations for
+chatbot evaluation. It does not expose the 400K source database.
+
 At the case-type step, reply `yes` or `suggested` to accept the recommendation.
 To correct it, enter a different menu number, the exact case-type name, or a
 sentence such as `No, this should be Occupational Safety`. The user's confirmed
@@ -230,7 +235,7 @@ choice is always the value saved with the case.
 
 ### Generate charts through chat
 
-Ask for a chart, graph, plot, histogram, or visualization. Gemma converts the
+Ask for a chart, graph, plot, histogram, or visualization. Llama 3 converts the
 request into a constrained chart plan; the application validates the plan and
 runs an allowlisted aggregation against the complete local SQLite corpus. Raw
 model output is never executed as SQL or JavaScript.
@@ -283,7 +288,7 @@ Python standard-library web server <------> local llama.cpp model server
         |
         +-- validated chart plan + aggregation -> local SVG/CSS charts
         |
-        +-- retrieved evidence + chat history -> Gemma 4 E4B IT -> answer
+        +-- retrieved evidence + chat history -> Meta Llama 3 8B -> answer
 ```
 
 ## Important qualification

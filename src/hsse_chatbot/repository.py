@@ -193,7 +193,154 @@ class IncidentRepository:
                     state_json TEXT NOT NULL,
                     updated_at TEXT NOT NULL
                 );
+                CREATE TABLE IF NOT EXISTS chat_conversations (
+                    session_id TEXT PRIMARY KEY,
+                    title TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS chat_messages (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    session_id TEXT NOT NULL,
+                    role TEXT NOT NULL CHECK (role IN ('user', 'assistant')),
+                    content TEXT NOT NULL,
+                    charts_json TEXT,
+                    model_key TEXT,
+                    model_id TEXT,
+                    latency_ms INTEGER,
+                    created_at TEXT NOT NULL,
+                    FOREIGN KEY (session_id)
+                        REFERENCES chat_conversations(session_id)
+                        ON DELETE CASCADE
+                );
+                CREATE INDEX IF NOT EXISTS chat_messages_session_id_id
+                    ON chat_messages(session_id, id);
+                CREATE INDEX IF NOT EXISTS chat_conversations_updated_at
+                    ON chat_conversations(updated_at DESC);
                 """
+            )
+            existing_columns = {
+                row[1]
+                for row in connection.execute("PRAGMA table_info(chat_messages)")
+            }
+            for column, definition in (
+                ("model_key", "TEXT"),
+                ("model_id", "TEXT"),
+                ("latency_ms", "INTEGER"),
+            ):
+                if column not in existing_columns:
+                    connection.execute(
+                        f"ALTER TABLE chat_messages ADD COLUMN {column} {definition}"
+                    )
+            connection.commit()
+
+    def save_chat_exchange(
+        self,
+        session_id: str,
+        user_message: str,
+        assistant_message: str,
+        charts: list[dict[str, object]] | None = None,
+        *,
+        model_key: str | None = None,
+        model_id: str | None = None,
+        latency_ms: int | None = None,
+    ) -> None:
+        """Append one completed local chatbot exchange to its conversation log."""
+
+        timestamp = datetime.now(timezone.utc).isoformat()
+        title = " ".join(user_message.split())[:120] or "Untitled conversation"
+        charts_json = (
+            json.dumps(charts, ensure_ascii=False, separators=(",", ":"))
+            if charts
+            else None
+        )
+        with closing(self._user_connection()) as connection:
+            connection.execute(
+                """
+                INSERT INTO chat_conversations (
+                    session_id, title, created_at, updated_at
+                ) VALUES (?, ?, ?, ?)
+                ON CONFLICT(session_id) DO UPDATE SET
+                    updated_at = excluded.updated_at
+                """,
+                (session_id, title, timestamp, timestamp),
+            )
+            connection.executemany(
+                """
+                INSERT INTO chat_messages (
+                    session_id, role, content, charts_json, model_key, model_id,
+                    latency_ms, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    (
+                        session_id, "user", user_message, None, model_key,
+                        model_id, None, timestamp,
+                    ),
+                    (
+                        session_id,
+                        "assistant",
+                        assistant_message,
+                        charts_json,
+                        model_key,
+                        model_id,
+                        latency_ms,
+                        timestamp,
+                    ),
+                ),
+            )
+            connection.commit()
+
+    def replace_chat_history(
+        self, session_id: str, history: list[dict[str, str]]
+    ) -> None:
+        """Import browser-local history when no durable log exists yet."""
+
+        if not history:
+            return
+        timestamp = datetime.now(timezone.utc).isoformat()
+        first_user_message = next(
+            (
+                item["content"]
+                for item in history
+                if item.get("role") == "user" and item.get("content")
+            ),
+            "Untitled conversation",
+        )
+        title = " ".join(first_user_message.split())[:120]
+        with closing(self._user_connection()) as connection:
+            existing = connection.execute(
+                "SELECT 1 FROM chat_messages WHERE session_id = ? LIMIT 1",
+                (session_id,),
+            ).fetchone()
+            if existing is not None:
+                return
+            connection.execute(
+                """
+                INSERT INTO chat_conversations (
+                    session_id, title, created_at, updated_at
+                ) VALUES (?, ?, ?, ?)
+                ON CONFLICT(session_id) DO UPDATE SET
+                    title = excluded.title,
+                    updated_at = excluded.updated_at
+                """,
+                (session_id, title, timestamp, timestamp),
+            )
+            connection.executemany(
+                """
+                INSERT INTO chat_messages (
+                    session_id, role, content, charts_json, created_at
+                ) VALUES (?, ?, ?, NULL, ?)
+                """,
+                (
+                    (
+                        session_id,
+                        item["role"],
+                        item["content"],
+                        timestamp,
+                    )
+                    for item in history
+                ),
             )
             connection.commit()
 
@@ -244,7 +391,10 @@ class IncidentRepository:
 
     @staticmethod
     def build_fts_query(
-        text: str, maximum_terms: int = 12, joiner: str = "OR"
+        text: str,
+        maximum_terms: int = 12,
+        joiner: str = "OR",
+        prefix_terms: bool = True,
     ) -> str:
         """Build a bounded, syntax-safe FTS5 OR query from user text."""
 
@@ -257,7 +407,8 @@ class IncidentRepository:
             if len(token) < 3 or token in _STOPWORDS or token in terms:
                 continue
             escaped = token.replace('"', '""')
-            terms.append(f'"{escaped}"*')
+            suffix = "*" if prefix_terms else ""
+            terms.append(f'"{escaped}"{suffix}')
             if len(terms) >= maximum_terms:
                 break
         return f" {joiner} ".join(terms)
@@ -382,7 +533,12 @@ class IncidentRepository:
     }
 
     def aggregate_counts(
-        self, dimensions: tuple[str, ...], limit: int
+        self,
+        dimensions: tuple[str, ...],
+        limit: int,
+        search_text: str | None = None,
+        search_mode: str = "all",
+        exact_search: bool = False,
     ) -> list[tuple]:
         """Count source incidents by one or two allowlisted dimensions."""
 
@@ -393,6 +549,21 @@ class IncidentRepository:
         except KeyError as error:
             raise ValueError(f"unsupported chart dimension: {error.args[0]}") from error
         limit = max(3, min(20, int(limit)))
+        if search_mode not in {"all", "any"}:
+            raise ValueError("search mode must be all or any")
+        joins = ""
+        conditions: list[str] = []
+        parameters: list[object] = []
+        if search_text:
+            fts_query = self.build_fts_query(
+                search_text,
+                joiner=("AND" if search_mode == "all" else "OR"),
+                prefix_terms=not exact_search,
+            )
+            if fts_query:
+                joins = "JOIN incidents_fts ON incidents_fts.rowid = incidents.rowid"
+                conditions.append("incidents_fts MATCH ?")
+                parameters.append(fts_query)
 
         if len(expressions) == 1:
             expression = expressions[0]
@@ -402,49 +573,81 @@ class IncidentRepository:
             sql = f"""
                 SELECT {expression} AS label, COUNT(*) AS value
                 FROM incidents
+                {joins}
                 WHERE {expression} IS NOT NULL AND TRIM({expression}) <> ''
+                {"AND " + " AND ".join(conditions) if conditions else ""}
                 GROUP BY label
                 ORDER BY {order}
                 {limit_clause}
             """
             with closing(self._source_connection()) as connection:
-                parameters = () if chronological else (limit,)
-                rows = connection.execute(sql, parameters).fetchall()
+                query_parameters = tuple(parameters)
+                if not chronological:
+                    query_parameters = (*query_parameters, limit)
+                rows = connection.execute(sql, query_parameters).fetchall()
             if chronological:
                 rows = rows[-limit:]
             return [(str(row["label"]), int(row["value"])) for row in rows]
 
         primary, series = expressions
+        filter_clause = " AND ".join(conditions)
+        filter_sql = f"AND {filter_clause}" if filter_clause else ""
         sql = f"""
             WITH top_primary AS (
                 SELECT {primary} AS label, COUNT(*) AS total
                 FROM incidents
+                {joins}
                 WHERE {primary} IS NOT NULL AND TRIM({primary}) <> ''
+                {filter_sql}
                 GROUP BY label
                 ORDER BY total DESC, label ASC
                 LIMIT ?
             )
             SELECT {primary} AS label, {series} AS series, COUNT(*) AS value
             FROM incidents
+            {joins}
             JOIN top_primary ON {primary} = top_primary.label
             WHERE {series} IS NOT NULL AND TRIM({series}) <> ''
+            {filter_sql}
             GROUP BY label, series
             ORDER BY top_primary.total DESC, label ASC, value DESC, series ASC
         """
         with closing(self._source_connection()) as connection:
-            rows = connection.execute(sql, (limit,)).fetchall()
+            rows = connection.execute(
+                sql, (*parameters, limit, *parameters)
+            ).fetchall()
         return [
             (str(row["label"]), str(row["series"]), int(row["value"]))
             for row in rows
         ]
 
-    def description_word_count_distribution(self) -> list[tuple[str, int]]:
+    def description_word_count_distribution(
+        self,
+        search_text: str | None = None,
+        search_mode: str = "all",
+        exact_search: bool = False,
+    ) -> list[tuple[str, int]]:
         """Return space-delimited word-count bins for all source descriptions."""
 
         word_count = (
             "LENGTH(TRIM(description)) - "
             "LENGTH(REPLACE(TRIM(description), ' ', '')) + 1"
         )
+        if search_mode not in {"all", "any"}:
+            raise ValueError("search mode must be all or any")
+        joins = ""
+        where = ""
+        parameters: tuple[object, ...] = ()
+        if search_text:
+            fts_query = self.build_fts_query(
+                search_text,
+                joiner=("AND" if search_mode == "all" else "OR"),
+                prefix_terms=not exact_search,
+            )
+            if fts_query:
+                joins = "JOIN incidents_fts ON incidents_fts.rowid = incidents.rowid"
+                where = "WHERE incidents_fts MATCH ?"
+                parameters = (fts_query,)
         sql = f"""
             SELECT CASE
                 WHEN {word_count} <= 25 THEN '1–25'
@@ -465,11 +668,13 @@ class IncidentRepository:
                 ELSE 7
             END AS bin_order
             FROM incidents
+            {joins}
+            {where}
             GROUP BY label
             ORDER BY bin_order
         """
         with closing(self._source_connection()) as connection:
-            rows = connection.execute(sql).fetchall()
+            rows = connection.execute(sql, parameters).fetchall()
         return [(str(row["label"]), int(row["value"])) for row in rows]
 
     _DATASET_QUERY_EXPRESSIONS = {
@@ -508,6 +713,7 @@ class IncidentRepository:
         search_mode: str,
         limit: int,
         offset: int,
+        exact_search: bool = False,
     ) -> dict[str, object]:
         """Execute a validated full-corpus query using only allowlisted SQL."""
 
@@ -523,7 +729,9 @@ class IncidentRepository:
         parameters: list[object] = []
         if search_text:
             fts_query = self.build_fts_query(
-                search_text, joiner=("AND" if search_mode == "all" else "OR")
+                search_text,
+                joiner=("AND" if search_mode == "all" else "OR"),
+                prefix_terms=not exact_search,
             )
             if fts_query:
                 joins = "JOIN incidents_fts ON incidents_fts.rowid = i.rowid"

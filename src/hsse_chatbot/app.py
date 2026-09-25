@@ -6,7 +6,9 @@ import argparse
 import json
 import re
 import threading
+import time
 import webbrowser
+from dataclasses import replace
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -14,7 +16,7 @@ from typing import Any
 
 from incident_pipeline.models import CASE_TYPES
 
-from .config import ChatbotConfig
+from .config import DEFAULT_MODEL_KEY, MODEL_PROFILES, ChatbotConfig
 from .service import ChatService, SessionState
 from .wizard import CaseWizard, WizardState
 
@@ -37,10 +39,15 @@ def find_project_root(start: Path) -> Path:
 
 
 class ChatApplication:
-    """Own per-browser wizard state while sharing one model and repository."""
+    """Own per-browser state while routing turns to selectable model services."""
 
-    def __init__(self, service: ChatService) -> None:
+    def __init__(
+        self,
+        service: ChatService,
+        model_services: dict[str, ChatService] | None = None,
+    ) -> None:
         self.service = service
+        self.model_services = model_services or {service.config.model_key: service}
         self._sessions: dict[str, SessionState] = {}
         self._lock = threading.Lock()
 
@@ -49,23 +56,70 @@ class ChatApplication:
         session_id: str,
         message: str,
         history: list[dict[str, str]],
+        model_key: str | None = None,
     ) -> dict[str, object]:
+        selected_key = model_key or self.service.config.model_key
+        selected_service = self.model_services.get(selected_key)
+        if selected_service is None:
+            raise ValueError(f"unknown model_key: {selected_key}")
         with self._lock:
             state = self._sessions.get(session_id)
         if state is None:
             state = self._load_session(session_id)
-        reply, charts, updated_state = self.service.respond_with_artifacts(
+        started = time.monotonic()
+        reply, charts, updated_state = selected_service.respond_with_artifacts(
             message, history, state
+        )
+        latency_ms = round((time.monotonic() - started) * 1000)
+        self.service.repository.save_chat_exchange(
+            session_id,
+            message,
+            reply,
+            charts,
+            model_key=selected_key,
+            model_id=selected_service.config.model_id,
+            latency_ms=latency_ms,
         )
         with self._lock:
             self._sessions[session_id] = updated_state
         self._persist_session(session_id, updated_state)
-        return {"reply": reply, "charts": charts}
+        return {
+            "reply": reply,
+            "charts": charts,
+            "model_key": selected_key,
+            "model_id": selected_service.config.model_id,
+            "model_label": self._model_label(selected_key),
+            "latency_ms": latency_ms,
+        }
+
+    def model_catalog(self) -> list[dict[str, str]]:
+        labels = {profile.key: profile.label for profile in MODEL_PROFILES}
+        return [
+            {
+                "key": key,
+                "label": labels.get(key, key),
+                "model_id": service.config.model_id,
+                "base_url": service.config.model_base_url,
+            }
+            for key, service in self.model_services.items()
+        ]
+
+    @staticmethod
+    def _model_label(key: str) -> str:
+        return next(
+            (profile.label for profile in MODEL_PROFILES if profile.key == key),
+            key,
+        )
 
     def reset(self, session_id: str) -> None:
         with self._lock:
             self._sessions.pop(session_id, None)
         self.service.repository.delete_chat_draft(session_id)
+
+    def sync_history(
+        self, session_id: str, history: list[dict[str, str]]
+    ) -> None:
+        self.service.repository.replace_chat_history(session_id, history)
 
     def _load_session(self, session_id: str) -> SessionState:
         payload = self.service.repository.load_chat_draft(session_id)
@@ -156,10 +210,18 @@ def _handler_factory(application: ChatApplication) -> type[BaseHTTPRequestHandle
                     }
                 )
                 return
+            if self.path == "/api/models":
+                self._send_json(
+                    {
+                        "default_model_key": application.service.config.model_key,
+                        "models": application.model_catalog(),
+                    }
+                )
+                return
             self._send_json({"error": "Not found"}, HTTPStatus.NOT_FOUND)
 
         def do_POST(self) -> None:  # noqa: N802 - stdlib handler API
-            if self.path not in {"/api/chat", "/api/reset"}:
+            if self.path not in {"/api/chat", "/api/reset", "/api/history/sync"}:
                 self._send_json({"error": "Not found"}, HTTPStatus.NOT_FOUND)
                 return
             try:
@@ -172,12 +234,23 @@ def _handler_factory(application: ChatApplication) -> type[BaseHTTPRequestHandle
                     self._send_json({"ok": True})
                     return
 
+                if self.path == "/api/history/sync":
+                    history = self._validated_history(
+                        payload.get("history", []), maximum_items=50
+                    )
+                    application.sync_history(session_id, history)
+                    self._send_json({"ok": True})
+                    return
+
                 message = str(payload.get("message", "")).strip()
                 if not message or len(message) > 20_000:
                     raise ValueError("message must contain 1–20,000 characters")
                 raw_history = payload.get("history", [])
                 history = self._validated_history(raw_history)
-                result = application.chat(session_id, message, history)
+                model_key = str(payload.get("model_key", "")).strip() or None
+                result = application.chat(
+                    session_id, message, history, model_key=model_key
+                )
                 self._send_json(result)
             except (ValueError, json.JSONDecodeError) as error:
                 self._send_json(
@@ -203,11 +276,13 @@ def _handler_factory(application: ChatApplication) -> type[BaseHTTPRequestHandle
             return payload
 
         @staticmethod
-        def _validated_history(value: object) -> list[dict[str, str]]:
+        def _validated_history(
+            value: object, maximum_items: int = 16
+        ) -> list[dict[str, str]]:
             if not isinstance(value, list):
                 raise ValueError("history must be a list")
             validated: list[dict[str, str]] = []
-            for item in value[-16:]:
+            for item in value[-maximum_items:]:
                 if not isinstance(item, dict):
                     continue
                 role = item.get("role")
@@ -255,13 +330,15 @@ def create_server(
     service: ChatService,
     host: str = "127.0.0.1",
     port: int = 7860,
+    *,
+    model_services: dict[str, ChatService] | None = None,
 ) -> ThreadingHTTPServer:
-    application = ChatApplication(service)
+    application = ChatApplication(service, model_services)
     return ThreadingHTTPServer((host, port), _handler_factory(application))
 
 
 def _argument_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Run the local HSSE Gemma chatbot")
+    parser = argparse.ArgumentParser(description="Run the local HSSE chatbot")
     parser.add_argument("--project-root", type=Path)
     parser.add_argument("--database", type=Path)
     parser.add_argument("--user-database", type=Path)
@@ -301,12 +378,36 @@ def main() -> None:
         enable_thinking=(True if args.thinking else None),
         local_files_only=(True if args.local_files_only else None),
     )
-    service = ChatService(config)
-    server = create_server(service, args.host, args.port)
+    if args.model_id or args.model_base_url or config.backend != "llama-cpp":
+        service = ChatService(config)
+        model_services = {config.model_key: service}
+    else:
+        model_services = {
+            profile.key: ChatService(
+                replace(
+                    config,
+                    model_key=profile.key,
+                    model_id=profile.model_id,
+                    model_base_url=profile.base_url,
+                )
+            )
+            for profile in MODEL_PROFILES
+        }
+        service = model_services[DEFAULT_MODEL_KEY]
+        config = service.config
+    server = create_server(
+        service, args.host, args.port, model_services=model_services
+    )
     url = f"http://{args.host}:{args.port}"
     print(f"HSSE chatbot: {url}")
     print(f"Model (loaded on first analytical question): {config.model_id}")
     print(f"Model backend: {config.backend}")
+    print("Selectable models:")
+    for profile in model_services.values():
+        print(
+            f"  {profile.config.model_key}: {profile.config.model_id} "
+            f"at {profile.config.model_base_url}"
+        )
     print(f"Corpus database: {config.database_path}")
     print(f"User cases: {config.user_database_path}")
     if args.open_browser:

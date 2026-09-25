@@ -1,4 +1,4 @@
-"""Chat orchestration: deterministic commands, retrieval, and Gemma responses."""
+"""Chat orchestration: deterministic commands, retrieval, and local-model responses."""
 
 from __future__ import annotations
 

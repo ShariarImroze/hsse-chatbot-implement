@@ -10,6 +10,7 @@ from incident_pipeline.models import CASE_TYPES, canonicalize_country
 from incident_pipeline.quality import HAZARD_TYPES
 
 from .model import ChatGenerator, ModelLoadError
+from .query_intent import extract_explicit_keyword_search
 from .repository import IncidentRepository
 
 
@@ -128,10 +129,11 @@ class DatasetQueryPlan:
     limit: int = 20
     offset: int = 0
     columns: tuple[str, ...] = _DEFAULT_COLUMNS
+    exact_search: bool = False
 
 
 class DatasetQueryPlanner:
-    """Use Gemma as a planner while enforcing a non-executable query schema."""
+    """Use the local model as a planner while enforcing a safe query schema."""
 
     def __init__(self, generator: ChatGenerator) -> None:
         self.generator = generator
@@ -265,6 +267,24 @@ class DatasetQueryPlanner:
     def _enforce_obvious_intent(
         cls, text: str, plan: DatasetQueryPlan
     ) -> DatasetQueryPlan:
+        explicit = extract_explicit_keyword_search(text)
+        if explicit is not None:
+            search_text, search_mode = explicit
+            plan = DatasetQueryPlan(
+                plan.operation,
+                tuple(
+                    item
+                    for item in plan.filters
+                    if item.field not in {"title", "description", "hazard"}
+                ),
+                plan.group_by,
+                search_text,
+                search_mode,
+                plan.limit,
+                plan.offset,
+                plan.columns,
+                True,
+            )
         if cls._is_count_request(text) and plan.operation == "semantic_search":
             fallback = cls._heuristic_plan(text)
             if fallback.operation != "semantic_search":
@@ -338,6 +358,7 @@ class DatasetQueryService:
             search_mode=plan.search_mode,
             limit=plan.limit,
             offset=plan.offset,
+            exact_search=plan.exact_search,
         )
         if plan.operation == "count":
             return self._format_count(result, plan)

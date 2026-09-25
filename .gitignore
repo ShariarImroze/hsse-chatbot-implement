@@ -23,6 +23,7 @@ data/raw/
 data/processed/*
 !data/processed/.gitkeep
 data/local/
+data/training/
 *.sqlite
 *.sqlite3
 

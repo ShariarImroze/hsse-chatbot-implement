@@ -7,6 +7,7 @@ import re
 from dataclasses import dataclass
 
 from .model import ChatGenerator, ModelLoadError
+from .query_intent import extract_explicit_keyword_search
 from .repository import IncidentRepository
 
 
@@ -40,7 +41,8 @@ _DIMENSION_LABELS = {
 _PLANNER_PROMPT = """You plan charts for a local HSSE incident database.
 Return exactly one JSON object and no Markdown or explanation:
 {"chart_type":"bar","group_by":["case_type"],"top_n":10,
- "log_scale":false,"title":"Incidents by case type"}
+ "log_scale":false,"title":"Incidents by case type",
+ "search_text":null,"search_mode":"all"}
 
 Rules:
 - chart_type must be bar, line, or pie.
@@ -55,7 +57,10 @@ Rules:
 - top_n must be 3 through 20. Use 10 unless the user requests another limit.
 - log_scale is true only when the user explicitly requests a logarithmic scale.
 - The title must be neutral and describe what is plotted.
-- The only metric is incident count. Never emit SQL, filters, code, or new keys.
+- Put report-text keywords in search_text. Use search_mode "any" when any
+  alternative may match (for example, "crack or cracks"); otherwise use "all".
+- search_text must be text or null, and search_mode must be all or any.
+- The only metric is incident count. Never emit SQL, code, or new keys.
 """
 
 
@@ -66,6 +71,9 @@ class ChartPlan:
     top_n: int
     log_scale: bool
     title: str
+    search_text: str | None = None
+    search_mode: str = "all"
+    exact_search: bool = False
 
 
 class ChartPlanner:
@@ -87,7 +95,7 @@ class ChartPlanner:
                 ]
             )
             parsed = self._parse_json_object(response)
-            return self._validated_plan(parsed)
+            return self._enforce_keyword_intent(text, self._validated_plan(parsed))
         except (ModelLoadError, ValueError, TypeError, json.JSONDecodeError):
             return self._heuristic_plan(text)
 
@@ -126,7 +134,41 @@ class ChartPlanner:
         title = re.sub(r"[\x00-\x1f]+", " ", str(value.get("title", ""))).strip()
         if not title:
             title = f"Incidents by {_DIMENSION_LABELS[dimensions[0]].casefold()}"
-        return ChartPlan(chart_type, dimensions, top_n, log_scale, title[:120])
+        raw_search = value.get("search_text")
+        if raw_search is not None and not isinstance(raw_search, str):
+            raise ValueError("search_text must be text or null")
+        search_text = raw_search.strip()[:500] if isinstance(raw_search, str) else None
+        search_text = search_text or None
+        search_mode = str(value.get("search_mode", "all")).casefold()
+        if search_mode not in {"all", "any"}:
+            raise ValueError("search_mode must be all or any")
+        return ChartPlan(
+            chart_type,
+            dimensions,
+            top_n,
+            log_scale,
+            title[:120],
+            search_text,
+            search_mode,
+            False,
+        )
+
+    @staticmethod
+    def _enforce_keyword_intent(text: str, plan: ChartPlan) -> ChartPlan:
+        explicit = extract_explicit_keyword_search(text)
+        if explicit is None:
+            return plan
+        search_text, search_mode = explicit
+        return ChartPlan(
+            plan.chart_type,
+            plan.group_by,
+            plan.top_n,
+            plan.log_scale,
+            plan.title,
+            search_text,
+            search_mode,
+            True,
+        )
 
     @staticmethod
     def _heuristic_plan(text: str) -> ChartPlan:
@@ -162,13 +204,14 @@ class ChartPlanner:
         top_n = max(3, min(20, int(number.group(1)))) if number else 10
         log_scale = bool(re.search(r"\b(log|logarithmic)\b", lowered))
         label = " by ".join(_DIMENSION_LABELS[item].casefold() for item in dimensions)
-        return ChartPlan(
+        plan = ChartPlan(
             chart_type,
             tuple(dimensions),
             top_n,
             log_scale,
             f"Incidents by {label}",
         )
+        return ChartPlanner._enforce_keyword_intent(text, plan)
 
 
 class ChartBuilder:
@@ -179,9 +222,19 @@ class ChartBuilder:
 
     def build(self, plan: ChartPlan) -> dict[str, object]:
         if plan.group_by == ("description_word_count",):
-            rows = self.repository.description_word_count_distribution()
+            rows = self.repository.description_word_count_distribution(
+                plan.search_text,
+                plan.search_mode,
+                plan.exact_search,
+            )
         else:
-            rows = self.repository.aggregate_counts(plan.group_by, plan.top_n)
+            rows = self.repository.aggregate_counts(
+                plan.group_by,
+                plan.top_n,
+                plan.search_text,
+                plan.search_mode,
+                plan.exact_search,
+            )
         if not rows:
             raise ValueError("No chartable records were found for that request.")
 
@@ -196,7 +249,21 @@ class ChartBuilder:
             chart_type = "stacked_bar"
             labels, datasets = self._stacked_data(rows)
 
-        total = self.repository.corpus_counts()[0]
+        corpus_total = self.repository.corpus_counts()[0]
+        if plan.search_text:
+            count_result = self.repository.execute_dataset_query(
+                operation="count",
+                filters=(),
+                group_by=(),
+                search_text=plan.search_text,
+                search_mode=plan.search_mode,
+                exact_search=plan.exact_search,
+                limit=1,
+                offset=0,
+            )
+            total_scope = f"{int(count_result['total']):,} matching source cases"
+        else:
+            total_scope = f"{corpus_total:,} source cases"
         if plan.group_by == ("description_word_count",):
             scope = " · Space-delimited description-length bins"
         else:
@@ -205,7 +272,7 @@ class ChartBuilder:
         return {
             "type": chart_type,
             "title": plan.title,
-            "subtitle": f"Incident count{scope} · {total:,} source cases",
+            "subtitle": f"Incident count{scope} · {total_scope}",
             "labels": labels,
             "datasets": datasets,
             "log_scale": plan.log_scale,

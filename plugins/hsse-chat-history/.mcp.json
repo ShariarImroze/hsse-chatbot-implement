@@ -1,0 +1,17 @@
+{
+  "mcpServers": {
+    "hsse_chat_history": {
+      "title": "HSSE Chat History",
+      "description": "Read conversations saved by the local HSSE chatbot.",
+      "cwd": ".",
+      "command": "/usr/bin/python3",
+      "args": [
+        "./scripts/server.py",
+        "--database",
+        "/Users/shariarimrozekhan/Documents/hsse-chatbot-implement/data/local/user_cases.sqlite"
+      ],
+      "startup_timeout_sec": 10,
+      "tool_timeout_sec": 30
+    }
+  }
+}

@@ -1,0 +1,33 @@
+{
+  "name": "hsse-chat-history",
+  "version": "0.1.0+codex.20260925134044",
+  "description": "Read locally saved HSSE chatbot conversations in Codex for review and improvement.",
+  "author": {
+    "name": "Md Shariar Imroze Khan"
+  },
+  "license": "MIT",
+  "keywords": [
+    "hsse",
+    "chatbot",
+    "conversation",
+    "evaluation"
+  ],
+  "skills": "./skills/",
+  "mcpServers": "./.mcp.json",
+  "interface": {
+    "displayName": "HSSE Chat History",
+    "shortDescription": "Review local HSSE chatbot conversations",
+    "longDescription": "Provides read-only access to conversations saved by the local HSSE chatbot so Codex can diagnose failures, recommend improvements, and turn examples into tests.",
+    "developerName": "Md Shariar Imroze Khan",
+    "category": "Developer Tools",
+    "capabilities": [
+      "Read",
+      "Search"
+    ],
+    "defaultPrompt": [
+      "Review my latest HSSE chatbot conversation",
+      "Find HSSE chatbot conversations mentioning charts",
+      "Analyze recent chatbot failures and suggest fixes"
+    ]
+  }
+}
